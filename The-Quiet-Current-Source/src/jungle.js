@@ -2,14 +2,42 @@ import * as THREE from 'three'
 import { RIVER, VISUALS } from './config.js'
 import { bank, groundHeight, mix, seededRandom } from './river.js'
 import { combine, geometry, mesh, stone, tube, vec } from './geometry.js'
+import { sun, sunTint } from './atmosphere.js'
 
 const barkMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true, color: 0x7b654a, roughness: 0.97, side: THREE.DoubleSide,
 })
 const foliageMaterial = new THREE.MeshStandardMaterial({
-  vertexColors: true, roughness: 0.87, side: THREE.DoubleSide,
+  vertexColors: true, roughness: 0.95, side: THREE.DoubleSide,
 })
 const stoneMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93 })
+const canopyLobe = new THREE.IcosahedronGeometry(1, 1).attributes.position
+
+foliageMaterial.onBeforeCompile = shader => {
+  shader.uniforms.leafSun = { value: sun }
+  shader.uniforms.leafWarmth = { value: sunTint }
+  shader.vertexShader = 'varying vec3 leafPoint;\n' + shader.vertexShader.replace(
+    '#include <begin_vertex>', '#include <begin_vertex>\nleafPoint = position;',
+  )
+  shader.fragmentShader = 'varying vec3 leafPoint;\nuniform vec3 leafSun;\nuniform vec3 leafWarmth;\n' + shader.fragmentShader
+    .replace('#include <color_fragment>', `
+      #include <color_fragment>
+      float fiber = sin(leafPoint.x*34.0+leafPoint.z*13.0)*cos(leafPoint.y*29.0-leafPoint.z*37.0);
+      float leafTone = sin(leafPoint.x*3.9+leafPoint.y*4.5+leafPoint.z*3.4);
+      diffuseColor.rgb *= clamp(0.97 + leafTone*0.073 + fiber*0.031,0.0,1.15);
+    `)
+    .replace('#include <roughnessmap_fragment>', `
+      #include <roughnessmap_fragment>
+      roughnessFactor = clamp(roughnessFactor + leafTone * 0.057 + fiber * 0.027,0.78,1.0);
+    `)
+    .replace('#include <lights_fragment_end>', `
+      #include <lights_fragment_end>
+      vec3 leafLight = normalize((viewMatrix * vec4(leafSun, 0.0)).xyz);
+      float leafRim = 1.0 - abs(dot(normal, normalize(vViewPosition)));
+      float leafTransmission = max(0.0,dot(-normal,leafLight))*leafRim*leafRim;
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * leafWarmth * leafTransmission * 0.14;
+    `)
+}
 
 export const jungleLayers = { view: 1, reflection: 2 }
 
@@ -94,7 +122,7 @@ function palm(seed) {
         const end = base.clone().addScaledVector(side, sign * width * mix(0.81, 1.13, random()))
           .addScaledVector(direction, length * 0.145)
         end.y -= width * mix(0.15, 0.56, random())
-        shade.setHSL(mix(0.235, 0.29, random()), mix(0.53, 0.73, random()), mix(0.16, 0.32, random()))
+        shade.setHSL(mix(0.234, 0.318, random()), mix(0.53, 0.76, random()), mix(0.19, 0.37, random()))
         leaf(positions, colors, indices, base, end, direction, width * 0.20 + 0.035, shade)
       }
     }
@@ -109,6 +137,7 @@ function canopy(seed) {
   const colors = []
   const indices = []
   const clusters = []
+  const lobes = []
   const height = mix(10.5, 13.5, random())
   const lean = mix(-0.9, 1.7, random())
   branches.push(tube([vec(0, -0.4, 0), vec(0.16, 3.4, -0.13), vec(lean * 0.6, height * 0.67, 0.35),
@@ -134,14 +163,28 @@ function canopy(seed) {
   }
   const tint = new THREE.Color()
   for (const { point, size } of clusters) {
-    for (let twig = 0; twig < 20; twig++) {
+    const phase = random() * Math.PI * 2
+    const firstVertex = positions.length / 3
+    lobes.push(firstVertex)
+    tint.setHSL(mix(0.251, 0.358, random()), mix(0.49, 0.72, random()), mix(0.165, 0.245, random()))
+    for (let i = 0; i < canopyLobe.count; i++) {
+      const x = canopyLobe.getX(i)
+      const y = canopyLobe.getY(i)
+      const z = canopyLobe.getZ(i)
+      const shape = 0.93 + Math.sin(x * 6.0 + z * 4.9 + phase) * 0.16 + Math.cos(y * 5.0 - z * 6.5 - phase) * 0.12
+      positions.push(point.x + x * size * shape * 0.88, point.y + y * size * shape * 0.47, point.z + z * size * shape)
+      const shade = 0.79 + y * 0.17 + Math.sin(x * 11 + y * 8 - z * 7 + phase) * 0.11
+      colors.push(tint.r * shade, tint.g * shade, tint.b * shade)
+      indices.push(firstVertex + i)
+    }
+    for (let twig = 0; twig < 12; twig++) {
       const angle = twig * 2.39996 + random() * 0.78
       const radial = Math.sqrt(random()) * size
       const direction = vec(Math.cos(angle), 0, Math.sin(angle))
       const branch = point.clone().addScaledVector(direction, radial)
       branch.y += mix(-0.78, 0.8, random()) * size * 0.57
       const length = mix(0.48, 1.31, random()) * size / 2
-      tint.setHSL(mix(0.215, 0.343, random()), mix(0.35, 0.63, random()), mix(0.13, 0.29, random()))
+      tint.setHSL(mix(0.224, 0.358, random()), mix(0.44, 0.74, random()), mix(0.19, 0.36, random()))
       const side = vec(-direction.z, 0, direction.x)
       const first = branch.clone().addScaledVector(direction, length).add(vec(0, mix(-0.32, 0.24, random()), 0))
       leaf(positions, colors, indices, branch, first, side, length * 0.51, tint, true)
@@ -149,7 +192,18 @@ function canopy(seed) {
       leaf(positions, colors, indices, branch, second, direction, length * 0.43, tint, true)
     }
   }
-  return { wood: combine(branches), leaves: leafGeometry(positions, colors, indices) }
+  const leaves = leafGeometry(positions, colors, indices)
+  const normal = leaves.attributes.normal
+  const rounded = vec(0, 0, 0)
+  const face = vec(0, 0, 0)
+  for (const first of lobes) {
+    for (let i = 0; i < canopyLobe.count; i++) {
+      rounded.set(canopyLobe.getX(i) / 0.88, canopyLobe.getY(i) / 0.47, canopyLobe.getZ(i)).normalize()
+      face.fromBufferAttribute(normal, first + i).lerp(rounded, 0.58).normalize()
+      normal.setXYZ(first + i, face.x, face.y, face.z)
+    }
+  }
+  return { wood: combine(branches), leaves }
 }
 
 function undergrowth(seed) {
@@ -165,8 +219,37 @@ function undergrowth(seed) {
     const dz = Math.sin(angle)
     const start = vec(dx * 0.18, i < 9 ? 0.15 : 0.55, dz * 0.18)
     const tip = vec(dx * length, mix(0.23, 1.40, random()), dz * length)
-    tint.setHSL(mix(0.20, 0.34, random()), mix(0.40, 0.62, random()), mix(0.16, 0.33, random()))
+    tint.setHSL(mix(0.207, 0.354, random()), mix(0.48, 0.70, random()), mix(0.19, 0.378, random()))
     leaf(positions, colors, indices, start, tip, vec(-dz, 0.28, dx), length * 0.20, tint)
+  }
+  return leafGeometry(positions, colors, indices)
+}
+
+function fern(seed) {
+  const random = seededRandom(seed)
+  const positions = []
+  const colors = []
+  const indices = []
+  const tint = new THREE.Color()
+  for (let frond = 0; frond < 9; frond++) {
+    const angle = frond * 2.39996 + random() * 0.4
+    const forward = vec(Math.cos(angle), 0, Math.sin(angle))
+    const side = vec(-forward.z, 0, forward.x)
+    const length = mix(1.0, 1.87, random())
+    const height = mix(0.50, 1.32, random())
+    const stem = t => forward.clone().multiplyScalar(length * t)
+      .add(vec(0, 0.09 + Math.sin(t * 2.26) * height, 0))
+    for (let pair = 1; pair <= 8; pair++) {
+      const t = pair / 9
+      const spread = Math.sin(t * Math.PI) ** 0.84 * length * 0.32
+      for (const sign of [-1, 1]) {
+        const base = stem(t)
+        const end = base.clone().addScaledVector(side, sign * spread)
+          .addScaledVector(forward, length * 0.18).add(vec(0, -spread * 0.20, 0))
+        tint.setHSL(mix(0.218, 0.292, random()), mix(0.58, 0.79, random()), mix(0.21, 0.39, random()))
+        leaf(positions, colors, indices, base, end, forward, spread * 0.22, tint, true)
+      }
+    }
   }
   return leafGeometry(positions, colors, indices)
 }
@@ -181,7 +264,7 @@ function makeBank(side) {
   const rows = Math.ceil((RIVER.sceneryEnd - sStart) / step)
   const mud = new THREE.Color(0x4e4a2b)
   const sand = new THREE.Color(0x8b7950)
-  const ground = new THREE.Color(0x374322)
+  const ground = new THREE.Color(0x425734)
   for (let row = 0; row <= rows; row++) {
     const s = sStart + row * step
     for (let col = 0; col < bands.length; col++) {
@@ -211,7 +294,9 @@ function makeBank(side) {
       diffuseColor.rgb *= 0.93 + grain * 0.11 + patches * 0.13;
     `)
   }
-  return mesh(geometry(positions, colors, indices), material)
+  const soil = mesh(geometry(positions, colors, indices), material)
+  soil.receiveShadow = true
+  return soil
 }
 
 export function addJungle(scene) {
@@ -219,15 +304,15 @@ export function addJungle(scene) {
   const random = seededRandom(RIVER.seed)
   const palms = [palm(13), palm(27), palm(52)]
   const trees = [canopy(9), canopy(108), canopy(27)]
-  const shrubs = [undergrowth(17), undergrowth(85)]
+  const shrubs = [undergrowth(17), undergrowth(85), fern(36), fern(104)]
   const rocks = [stone(22), stone(79), stone(145)]
   const batches = new Map()
   const vines = new Map()
   const dummy = new THREE.Object3D()
   const tint = new THREE.Color()
-  const batch = (landmark, material, s, adjustment) => {
+  const batch = (landmark, material, s, adjustment, castsShade = false) => {
     const key = landmark.id + '/' + Math.floor(s / 42)
-    if (!batches.has(key)) batches.set(key, { landmark, material, matrices: [], colors: [] })
+    if (!batches.has(key)) batches.set(key, { landmark, material, castsShade, matrices: [], colors: [] })
     const entry = batches.get(key)
     dummy.updateMatrix()
     entry.matrices.push(dummy.matrix.clone())
@@ -240,19 +325,19 @@ export function addJungle(scene) {
     dummy.rotation.set(mix(-0.12, 0.12, random()), yaw, mix(-0.10, 0.10, random()))
     dummy.scale.set(scale, scale * mix(0.88, 1.17, random()), scale)
     if (kind === 'tree') {
-      batch(prototype.wood, barkMaterial, s, brightness)
-      batch(prototype.leaves, foliageMaterial, s, brightness)
+      batch(prototype.wood, barkMaterial, s, brightness, true)
+      batch(prototype.leaves, foliageMaterial, s, brightness, true)
     } else {
       if (kind === 'rock') dummy.scale.set(scale * 1.16, scale * 0.73, scale)
       batch(prototype, kind === 'rock' ? stoneMaterial : foliageMaterial, s, brightness)
     }
   }
   for (const side of [-1, 1]) {
-    for (let s = -38; s < RIVER.sceneryEnd; s += 2.8 / VISUALS.foliageDensity) {
+    for (let s = -38; s < RIVER.sceneryEnd; s += 2.45 / VISUALS.foliageDensity) {
       const location = s + random() * 3.7
       plant(shrubs, 'shrub', location, side, mix(0.5, 5.9, random()), mix(0.64, 1.9, random()))
       if (random() > 0.27) plant(rocks, 'rock', location, side, mix(-1.1, 2.4, random()), mix(0.34, 1.55, random()))
-      if (random() > 0.38) plant(shrubs, 'shrub', location, side, mix(6.1, 16, random()), mix(0.9, 2.2, random()))
+      if (random() > 0.29) plant(shrubs, 'shrub', location, side, mix(6.1, 16, random()), mix(0.95, 2.2, random()))
     }
     for (let s = -38; s < RIVER.sceneryEnd; s += 4.9 / VISUALS.foliageDensity) {
       const location = s + random() * 6
@@ -285,7 +370,7 @@ export function addJungle(scene) {
   plant(trees, 'tree', 7, -1, 3.1, 1.72, 0.0)
   plant(trees, 'tree', 18, 1, 4.9, 1.59, 2.8)
 
-  const visibleBatches = Array.from(batches.values(), ({ landmark, material, matrices, colors }) => {
+  const visibleBatches = Array.from(batches.values(), ({ landmark, material, castsShade, matrices, colors }) => {
     landmark.computeBoundingBox()
     const bounds = matrices.map(matrix => landmark.boundingBox.clone().applyMatrix4(matrix).expandByScalar(0.02))
     const batchBounds = new THREE.Box3()
@@ -305,7 +390,7 @@ export function addJungle(scene) {
       scene.add(instances)
       return { instances, selection }
     })
-    return { matrices, colors, passes, bounds, batchBounds }
+    return { matrices, colors, passes, bounds, batchBounds, castsShade }
   })
 
   const projection = new THREE.Matrix4()
@@ -317,7 +402,7 @@ export function addJungle(scene) {
     if (lastProjection[pass].equals(projection)) return
     lastProjection[pass].copy(projection)
     frustum.setFromProjectionMatrix(projection)
-    for (const { matrices, colors, passes, bounds, batchBounds } of visibleBatches) {
+    for (const { matrices, colors, passes, bounds, batchBounds, castsShade } of visibleBatches) {
       const { instances, selection } = passes[pass]
       if (!frustum.intersectsBox(batchBounds)) {
         instances.visible = false
@@ -338,6 +423,8 @@ export function addJungle(scene) {
       }
       instances.visible = drawn > 0
       instances.count = drawn
+      instances.castShadow = !reflecting && castsShade && batchBounds.min.z < camera.position.z + 19
+        && batchBounds.max.z > camera.position.z - 47
       if (updated) {
         instances.instanceMatrix.needsUpdate = true
         instances.instanceColor.needsUpdate = true

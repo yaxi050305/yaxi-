@@ -1,6 +1,6 @@
 # 雾隐深流 · The Quiet Current
 
-在清晨的热带雨林里划一艘小木船，穿过河湾，到右岸有灯的古老码头。
+在傍晚的热带雨林里划一艘小木船，穿过能看见河床的清水，在暮色中抵达右岸亮灯的古老码头。
 
 ## 本地启动
 
@@ -33,7 +33,7 @@ npm run dev
 | `BOAT.lookSensitivity`、`lookYaw`、`lookPitch` | 鼠标灵敏度、水平和垂直观察范围 |
 | `BOAT.dockingSeconds` | 自动靠岸动画的时长（秒） |
 | `VISUALS.pixelRatio`、`reflectionSize` | 渲染分辨率倍率上限与水面反射纹理的最大横向分辨率 |
-| `VISUALS.fogDensity`、`fogColor`、`sunDirection`、`exposure` | 清晨雾的浓度和颜色、太阳方向、整体曝光 |
+| `VISUALS.fogDensity`、`fogColor`、`sunDirection`、`exposure` | 傍晚的初始雾气、太阳方向和整体曝光。日落各阶段的光照调色在 `src/atmosphere.js` |
 | `VISUALS.foliageDensity` | 两岸植物和散布岩石的密度倍率，保持大于零 |
 
 河道和碰撞物分布在 `src/river.js`，船身和物理在 `src/boat.js`，雨林植被、地标、水面与天空分别在 `src/jungle.js`、`src/landmarks.js`、`src/water.js` 和 `src/atmosphere.js`。声音由 `src/audio.js` 中的 Web Audio 合成，模型和材质也在本地生成。

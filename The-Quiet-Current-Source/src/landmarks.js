@@ -6,6 +6,33 @@ const bark = new THREE.MeshStandardMaterial({ color: 0x69543a, vertexColors: tru
 const mossStone = new THREE.MeshStandardMaterial({ color: 0x858781, vertexColors: true, roughness: 0.93 })
 const brokenWood = new THREE.MeshStandardMaterial({ color: 0x9f8258, roughness: 1 })
 
+function shadowed(model) {
+  model.traverse(part => {
+    if (!part.isMesh) return
+    part.castShadow = true
+    part.receiveShadow = true
+  })
+  return model
+}
+
+mossStone.onBeforeCompile = shader => {
+  shader.vertexShader = 'varying vec3 rockPoint;\n' + shader.vertexShader.replace(
+    '#include <begin_vertex>', '#include <begin_vertex>\nrockPoint = (modelMatrix * vec4(position,1.0)).xyz;',
+  )
+  shader.fragmentShader = 'varying vec3 rockPoint;\n' + shader.fragmentShader
+    .replace('#include <color_fragment>', `
+      #include <color_fragment>
+      float stoneVein = sin(rockPoint.y*14.1 + rockPoint.x*2.8 + sin(rockPoint.z*11.9)*0.8);
+      float stoneGrain = sin(rockPoint.x*36.0 + rockPoint.z*51.0)*cos(rockPoint.y*49.0);
+      float dryStone = smoothstep(-0.02,0.79,rockPoint.y);
+      diffuseColor.rgb *= (0.91 + stoneVein*0.055 + stoneGrain*0.035) * mix(0.66,1.0,dryStone);
+    `)
+    .replace('#include <roughnessmap_fragment>', `
+      #include <roughnessmap_fragment>
+      roughnessFactor *= mix(0.72,1.0,dryStone);
+    `)
+}
+
 function deadfall(x, s, angle, length, size) {
   const log = new THREE.Group()
   const start = -length / 2
@@ -24,7 +51,7 @@ function deadfall(x, s, angle, length, size) {
   }
   log.position.set(x, 0.12, -s)
   log.rotation.y = -angle
-  return log
+  return shadowed(log)
 }
 
 export function addLandmarks(scene) {
@@ -38,12 +65,12 @@ export function addLandmarks(scene) {
     const boulder = mesh(rocks[Math.floor(random() * rocks.length)], mossStone, object.x, 0.27, -object.s)
     boulder.rotation.set(random() * 0.34, object.angle, -0.24 + random() * 0.49)
     boulder.scale.set(object.radius * 1.03, object.radius * mix(0.56, 0.82, random()), object.radius * 0.87)
-    scene.add(boulder)
+    scene.add(shadowed(boulder))
     const companion = mesh(rocks[1], mossStone,
       object.x + Math.cos(object.angle) * object.radius * 0.71, -0.05,
       -object.s + Math.sin(object.angle) * object.radius * 0.71)
     companion.scale.setScalar(object.radius * 0.46)
-    scene.add(companion)
+    scene.add(shadowed(companion))
   }
 
   for (const [s, side, length, angle] of [[14, 1, 7.4, 0.1], [48, -1, 6.8, -0.2], [137, 1, 5.4, 0.3],
@@ -54,7 +81,7 @@ export function addLandmarks(scene) {
     scene.add(log)
   }
   addLilies(scene)
-  addDock(scene)
+  return addDock(scene)
 }
 
 function addLilies(scene) {
@@ -141,15 +168,22 @@ function addDock(scene) {
   }
   dockGroup.add(mesh(new THREE.BoxGeometry(0.15, 2.48, 0.15), wood[0], 1.56, 1.72, -1.38))
   dockGroup.add(mesh(new THREE.BoxGeometry(0.61, 0.11, 0.13), wood[0], 1.56, 2.96, -1.57))
-  const glow = new THREE.MeshBasicMaterial({ color: 0xffc97f })
+  const lanternColor = new THREE.Color(0xffae59)
+  const glow = new THREE.MeshBasicMaterial({ color: lanternColor })
   dockGroup.add(mesh(new THREE.BoxGeometry(0.23, 0.29, 0.23), glow, 1.56, 2.65, -1.54))
-  const light = new THREE.PointLight(0xffb35c, 12, 6, 2)
+  const light = new THREE.PointLight(0xffb35c, 3.8, 8, 2)
   light.position.set(1.56, 2.67, -1.54)
   dockGroup.add(light)
+  shadowed(dockGroup)
+  return progress => {
+    const lit = THREE.MathUtils.smoothstep(progress, 0.64, 0.99)
+    light.intensity = mix(3.8, 16, lit)
+    glow.color.copy(lanternColor).multiplyScalar(mix(0.36, 2.45, lit))
+  }
 }
 
 export function addFarRidges(scene) {
-  const material = new THREE.MeshBasicMaterial({ color: 0x778761, side: THREE.DoubleSide, fog: false })
+  const material = new THREE.MeshBasicMaterial({ color: 0x718878, side: THREE.DoubleSide })
   const positions = []
   const indices = []
   for (let i = 0; i <= 60; i++) {

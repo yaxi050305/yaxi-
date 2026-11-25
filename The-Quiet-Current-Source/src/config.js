@@ -22,9 +22,9 @@ export const BOAT = {
 export const VISUALS = {
   pixelRatio: 1.5,
   reflectionSize: 640,
-  exposure: 1.04,
-  fogColor: 0xa2ae90,
-  fogDensity: 0.0136,
+  exposure: 1.08,
+  fogColor: 0xb3c9b0,
+  fogDensity: 0.0088,
   foliageDensity: 1,
-  sunDirection: [0.42, 0.30, -0.86],
+  sunDirection: [0.52, 0.26, -0.81],
 }

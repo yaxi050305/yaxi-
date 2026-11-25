@@ -1,7 +1,8 @@
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { BOAT, RIVER } from './config.js'
 import { bank, berth, center, clamp, heading, mix, obstacles } from './river.js'
-import { mesh, tube, vec, woodTexture } from './geometry.js'
+import { combine, mesh, tube, vec, woodTexture } from './geometry.js'
 import { addRowingHand, poseRowingHand } from './hands.js'
 
 const hullProbes = [[-1.28, 0.56], [0, 0.85], [1.37, 0.62], [2.24, 0.34]]
@@ -11,6 +12,11 @@ export class Boat {
   constructor(scene, onStroke, onCollision) {
     this.model = new THREE.Group()
     this.paddles = addBoatModel(this.model)
+    this.model.traverse(part => {
+      if (!part.isMesh) return
+      part.castShadow = true
+      part.receiveShadow = true
+    })
     scene.add(this.model)
     this.onStroke = onStroke
     this.onCollision = onCollision
@@ -217,102 +223,197 @@ export class Boat {
   }
 }
 
+function hullSide(outline, profile, side) {
+  const positions = []
+  const uvs = []
+  const colors = []
+  const strips = [[], [], [], []]
+  const length = 56
+  const height = 20
+  for (let row = 0; row <= length; row++) {
+    const t = row / length
+    const section = outline.getPoint(t)
+    const keel = 0.005 + Math.abs(section.z) ** 3 * 0.015
+    for (let column = 0; column <= height; column++) {
+      const v = column / height
+      const cross = profile.getPoint(v)
+      positions.push(side * section.x * cross.x, mix(keel, section.y, cross.y), section.z)
+      uvs.push(t, v)
+      const seam = Math.min(column % 5, 5 - column % 5)
+      const shade = 0.86 + 0.14 * Math.min(1, seam / 2)
+      colors.push(shade, shade * 0.98, shade * 0.96)
+      if (row === length || column === height) continue
+      const a = row * (height + 1) + column
+      const b = a + height + 1
+      const strip = strips[Math.floor(column / 5)]
+      if (side === 1) strip.push(a, a + 1, b, a + 1, b + 1, b)
+      else strip.push(a, b, a + 1, a + 1, b, b + 1)
+    }
+  }
+  const hull = new THREE.BufferGeometry()
+  hull.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  hull.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  hull.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+  hull.setIndex(strips.flat())
+  let start = 0
+  for (const [index, strip] of strips.entries()) {
+    hull.addGroup(start, strip.length, [0, 1, 2, 1][index])
+    start += strip.length
+  }
+  hull.computeVertexNormals()
+  return hull
+}
+
+function bowDeck(outline) {
+  const positions = []
+  const uvs = []
+  const indices = []
+  const rows = 22
+  const columns = 10
+  for (let row = 0; row <= rows; row++) {
+    const t = row / rows
+    const section = outline.getPoint(t * 0.197)
+    for (let column = 0; column <= columns; column++) {
+      const width = column / columns * 2 - 1
+      const crown = (1 - width * width) * Math.sin(t * Math.PI * 0.76) * 0.034
+      positions.push(width * section.x * 0.91, section.y - 0.025 + crown, section.z)
+      uvs.push(t, 0.5 + width * t * 0.5)
+      if (row === rows || column === columns) continue
+      const a = row * (columns + 1) + column
+      const b = a + columns + 1
+      indices.push(a, b, a + 1, a + 1, b, b + 1)
+    }
+  }
+  const deck = new THREE.BufferGeometry()
+  deck.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  deck.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  deck.setIndex(indices)
+  deck.computeVertexNormals()
+  return deck
+}
+
+function timberEdge(points, radius, endRadius, segments) {
+  const sides = 14
+  const rail = tube(points, radius, endRadius, segments, sides, 0.019)
+  const uvs = []
+  for (let ring = 0; ring <= segments; ring++) {
+    for (let side = 0; side < sides; side++) {
+      uvs.push(ring / segments, 0.19 + (0.5 + 0.5 * Math.sin(side * Math.PI * 2 / sides)) * 0.62)
+    }
+  }
+  rail.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  return rail
+}
+
+function mooringLine() {
+  const coil = []
+  for (let i = 0; i <= 80; i++) {
+    const t = i / 80
+    const angle = t * Math.PI * 9.35 + 0.25
+    const radius = mix(0.171, 0.056, t) + Math.sin(t * 18) * 0.008
+    coil.push(vec(Math.cos(angle) * radius, 0.431 + t * 0.073,
+      -1.78 + Math.sin(angle) * radius * 0.73))
+  }
+  coil.unshift(vec(-0.34, 0.413, -1.71), vec(-0.22, 0.420, -1.66))
+  const path = new THREE.CatmullRomCurve3(coil)
+  const sections = 218
+  const frames = path.computeFrenetFrames(sections, false)
+  const strands = [[], [], []]
+  for (let ring = 0; ring <= sections; ring++) {
+    const t = ring / sections
+    const center = path.getPointAt(t)
+    for (const [index, strand] of strands.entries()) {
+      const turn = (t * 29 + index / strands.length) * Math.PI * 2
+      strand.push(center.clone().addScaledVector(frames.normals[ring], Math.cos(turn) * 0.008)
+        .addScaledVector(frames.binormals[ring], Math.sin(turn) * 0.008))
+    }
+  }
+  return combine(strands.map(strand => tube(strand, 0.009, 0.008, sections, 6, 0.055)))
+}
+
+function paddleShaft() {
+  const shaft = new THREE.CylinderGeometry(0.031, 0.042, 2.37, 18)
+  const uv = shaft.attributes.uv
+  for (let i = 0; i < uv.count; i++) {
+    const ring = uv.getX(i)
+    uv.setXY(i, uv.getY(i), ring)
+  }
+  return shaft
+}
+
 function addBoatModel(group) {
   const texture = woodTexture()
-  const wood = color => new THREE.MeshStandardMaterial({ color, map: texture, roughness: 0.82 })
-  const sideWood = wood(0x805739)
-  sideWood.side = THREE.DoubleSide
-  const dark = wood(0x714a30)
-  dark.side = THREE.DoubleSide
-  const rail = new THREE.MeshStandardMaterial({ color: 0xb28a5d, vertexColors: true, roughness: 0.74, side: THREE.DoubleSide })
-  const decks = [wood(0x93704f), wood(0xb18054), wood(0x856144)]
-  const metal = new THREE.MeshStandardMaterial({ color: 0x574d37, roughness: 0.73, metalness: 0.26 })
+  const grain = woodTexture(true)
+  const wood = (color, roughness = 0.93) => new THREE.MeshStandardMaterial({
+    color, map: texture, bumpMap: grain, bumpScale: 0.0041, roughnessMap: grain, roughness,
+  })
+  const planks = [wood(0x583d30, 0.57), wood(0x93765d), wood(0x87644c)]
+  for (const plank of planks) {
+    plank.side = THREE.DoubleSide
+    plank.vertexColors = true
+  }
+  const rail = wood(0xbc9977, 0.87)
+  rail.side = THREE.DoubleSide
+  rail.vertexColors = true
+  const decks = [wood(0xa38366), wood(0xb69571, 0.82), wood(0x94765c)]
+  const metal = new THREE.MeshStandardMaterial({ color: 0x7d6850, roughness: 0.66, metalness: 0.68 })
   const crossSections = [
     [-2.76, 0.035, 0.87], [-2.54, 0.29, 0.71], [-2.12, 0.53, 0.58], [-1.62, 0.67, 0.49],
     [-1.0, 0.77, 0.45], [-0.25, 0.82, 0.44], [0.55, 0.80, 0.45], [1.19, 0.69, 0.50],
     [1.64, 0.49, 0.56], [1.93, 0.28, 0.64], [2.09, 0.035, 0.71],
   ]
-  const vertex = ([z, width, height], side, band) => {
-    const curve = [0, 0.67, 0.90, 0.97, 1]
-    const y = mix(0.005 + Math.abs(z) ** 3 * 0.015, height, [0, 0.22, 0.46, 0.73, 1][band])
-    return vec(width * curve[band] * side, y, z)
-  }
+  const outline = new THREE.CatmullRomCurve3(crossSections.map(([z, width, height]) => vec(width, height, z)))
+  const profile = new THREE.CatmullRomCurve3([vec(0, 0, 0), vec(0.67, 0.22, 0), vec(0.90, 0.46, 0),
+    vec(0.973, 0.73, 0), vec(1, 1, 0)], false, 'catmullrom')
+  const rivets = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 7), metal, 16)
+  const fastener = new THREE.Object3D()
+  fastener.scale.set(0.020, 0.007, 0.020)
   for (const side of [-1, 1]) {
-    const bounds = crossSections.map(row => vertex(row, side, 4))
-    group.add(mesh(tube(bounds, 0.054, 0.051, 26, 6), rail))
-    for (let band = 0; band < 4; band++) {
-      const points = []
-      const uvs = []
-      const indices = []
-      for (let i = 0; i < crossSections.length; i++) {
-        for (let j = 0; j < 2; j++) {
-          const point = vertex(crossSections[i], side, band + j)
-          points.push(...point)
-          uvs.push(i / (crossSections.length - 1), j)
-        }
-        if (i < crossSections.length - 1) {
-          const a = i * 2
-          indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3)
-        }
-      }
-      const plank = new THREE.BufferGeometry()
-      plank.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-      plank.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
-      plank.setIndex(indices)
-      plank.computeVertexNormals()
-      group.add(mesh(plank, band % 2 ? sideWood : dark))
+    const bounds = crossSections.map(([z, width, height]) => vec(side * width, height, z))
+    group.add(mesh(timberEdge(bounds, 0.039, 0.042, 56), rail))
+    group.add(mesh(hullSide(outline, profile, side), planks))
+    for (let i = 0; i < 8; i++) {
+      const section = outline.getPoint(0.21 + i * 0.097)
+      fastener.position.set(side * section.x, section.y + 0.037, section.z)
+      fastener.updateMatrix()
+      rivets.setMatrixAt(i + (side === -1 ? 0 : 8), fastener.matrix)
     }
   }
+  group.add(rivets)
   for (let i = 0; i < 16; i++) {
     const z = -2.42 + i * 0.27
     const width = 0.68 * Math.sqrt(Math.max(0.05, 1 - ((z + 0.25) / 2.5) ** 2))
-    const board = mesh(new THREE.BoxGeometry(width * 2, 0.048, 0.255), decks[i % 3], 0, 0.105 + z * z * 0.018, z)
+    const board = mesh(new RoundedBoxGeometry(width * 2, 0.048, 0.255, 2, 0.017), decks[i % 3], 0, 0.105 + z * z * 0.018, z)
     group.add(board)
   }
   for (const [z, size] of [[-1.12, 1.40], [0.64, 1.45]]) {
-    group.add(mesh(new THREE.BoxGeometry(size, 0.068, 0.24), decks[1], 0, 0.34, z))
+    group.add(mesh(new RoundedBoxGeometry(size, 0.068, 0.24, 3, 0.017), decks[1], 0, 0.34, z))
   }
   for (const side of [-1, 1]) {
-    group.add(mesh(new THREE.BoxGeometry(0.12, 0.045, 0.24), metal, side * 0.78, 0.47, -1.10))
+    group.add(mesh(new RoundedBoxGeometry(0.12, 0.045, 0.24, 2, 0.015), metal, side * 0.78, 0.47, -1.10))
   }
-  const bow = new THREE.BufferGeometry()
-  bow.setAttribute('position', new THREE.Float32BufferAttribute([
-    0, 0.849, -2.755, -0.242, 0.692, -2.52, 0.242, 0.692, -2.52,
-    -0.460, 0.558, -2.13, 0.460, 0.558, -2.13,
-  ], 3))
-  bow.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0.5, 0.36, 0.2, 0.36, 0.8, 1, 0, 1, 1], 2))
-  bow.setIndex([0, 1, 2, 1, 3, 2, 2, 3, 4])
-  bow.computeVertexNormals()
-  group.add(mesh(bow, decks[1]))
-  group.add(mesh(tube([vec(0, 0.13, -2.54), vec(0, 0.48, -2.70),
-    vec(0, 0.83, -2.77), vec(0, 0.879, -2.743)], 0.057, 0.053, 12, 7), rail))
-  const rope = new THREE.MeshStandardMaterial({ color: 0x9b8961, roughness: 1, vertexColors: true })
-  const coil = []
-  for (let i = 0; i < 68; i++) {
-    const t = i / 67
-    const angle = t * Math.PI * 10
-    const radius = mix(0.145, 0.04, t)
-    coil.push(vec(Math.cos(angle) * radius, 0.44 + t * 0.055, -1.78 + Math.sin(angle) * radius * 0.82))
-  }
-  group.add(mesh(tube(coil, 0.018, 0.017, 100, 5), rope))
+  group.add(mesh(bowDeck(outline), decks[1]))
+  group.add(mesh(timberEdge([vec(0, 0.13, -2.54), vec(0, 0.48, -2.70),
+    vec(0, 0.83, -2.77), vec(0, 0.879, -2.743)], 0.046, 0.044, 20), rail))
+  const rope = new THREE.MeshStandardMaterial({ color: 0x9f9370, roughness: 1, vertexColors: true })
+  group.add(mesh(mooringLine(), rope))
 
   return [-1, 1].map(sign => {
     const pivot = new THREE.Group()
     group.add(pivot)
-    const shaft = mesh(new THREE.CylinderGeometry(0.031, 0.042, 2.37, 9),
-      decks[1], sign * 0.46, 0, 0)
+    const shaft = mesh(paddleShaft(), decks[1], sign * 0.46, 0, 0)
     shaft.rotation.z = -Math.PI / 2
     pivot.add(shaft)
-    const outline = new THREE.Shape()
-    outline.moveTo(-0.25, -0.045)
-    outline.quadraticCurveTo(-0.08, -0.10, 0.04, -0.12)
-    outline.quadraticCurveTo(0.36, -0.185, 0.48, -0.117)
-    outline.quadraticCurveTo(0.52, 0, 0.47, 0.12)
-    outline.quadraticCurveTo(0.36, 0.175, 0.05, 0.115)
-    outline.quadraticCurveTo(-0.10, 0.08, -0.25, 0.045)
-    outline.closePath()
-    const blade = mesh(new THREE.ExtrudeGeometry(outline, {
-      depth: 0.035, bevelThickness: 0.017, bevelSize: 0.016, bevelSegments: 2, curveSegments: 6,
+    const bladeOutline = new THREE.Shape()
+    bladeOutline.moveTo(-0.25, -0.045)
+    bladeOutline.quadraticCurveTo(-0.08, -0.10, 0.04, -0.12)
+    bladeOutline.quadraticCurveTo(0.36, -0.185, 0.48, -0.117)
+    bladeOutline.quadraticCurveTo(0.52, 0, 0.47, 0.12)
+    bladeOutline.quadraticCurveTo(0.36, 0.175, 0.05, 0.115)
+    bladeOutline.quadraticCurveTo(-0.10, 0.08, -0.25, 0.045)
+    bladeOutline.closePath()
+    const blade = mesh(new THREE.ExtrudeGeometry(bladeOutline, {
+      depth: 0.035, bevelThickness: 0.017, bevelSize: 0.016, bevelSegments: 5, curveSegments: 12,
     }), decks[0], sign * 1.56, 0, 0)
     blade.rotation.x = (sign === -1 ? -0.74 : -0.86) * Math.PI
     if (sign === -1) blade.scale.x = -1

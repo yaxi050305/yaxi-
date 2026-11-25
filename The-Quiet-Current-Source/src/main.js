@@ -7,6 +7,7 @@ import { addSky, addLightShafts } from './atmosphere.js'
 import { addJungle, jungleLayers } from './jungle.js'
 import { addFarRidges, addLandmarks } from './landmarks.js'
 import { berth, clamp, dock, reachedDock } from './river.js'
+import { addRiverbed } from './riverbed.js'
 import { createUI } from './ui.js'
 import { Water } from './water.js'
 import './style.css'
@@ -26,6 +27,7 @@ let water
 let crocodiles
 let markerPoint
 let touchLook
+let sunsetProgress = 0
 
 const ui = createUI(root, {
   start,
@@ -57,6 +59,7 @@ function start() {
   boat.reset()
   water.reset()
   crocodiles.reset()
+  sunsetProgress = 0
   playTime = 0
   changeMode('playing')
 }
@@ -145,6 +148,9 @@ function launch() {
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = VISUALS.exposure
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFShadowMap
+  renderer.shadowMap.autoUpdate = false
   renderer.domElement.setAttribute('aria-hidden', 'true')
   ui.view.append(renderer.domElement)
   const scene = new THREE.Scene()
@@ -153,10 +159,11 @@ function launch() {
   const camera = new THREE.PerspectiveCamera(61, 1, 0.055, 580)
   camera.layers.enable(jungleLayers.view)
   markerPoint = new THREE.Vector3()
-  addSky(scene)
+  const { updateSunset, placeShadow } = addSky(scene)
+  const updateRiverbed = addRiverbed(scene, jungleLayers.view)
   addFarRidges(scene)
   const prepareVegetation = addJungle(scene)
-  addLandmarks(scene)
+  const updateLantern = addLandmarks(scene)
   addLightShafts(scene)
   water = new Water(scene)
   water.reflectedCamera.layers.enable(jungleLayers.reflection)
@@ -186,6 +193,7 @@ function launch() {
 
   let lastFrame = performance.now()
   let pausedFrame = false
+  let nextShadow = 0
   let lastWidth = root.clientWidth
   let lastHeight = root.clientHeight
   renderer.setAnimationLoop(now => {
@@ -230,6 +238,10 @@ function launch() {
     }
     boat.pose(time, camera)
     camera.updateMatrixWorld(true)
+    sunsetProgress = Math.max(sunsetProgress, clamp((boat.s - RIVER.start) / (berth.s - RIVER.start), 0, 1))
+    updateSunset(sunsetProgress)
+    updateLantern(sunsetProgress)
+    updateRiverbed(time)
     if (mode === 'playing') {
       const distance = boat.s < RIVER.dock - 20 ? RIVER.dock - boat.s : Math.hypot(berth.x - boat.x, berth.s - boat.s)
       const percent = clamp((boat.s - RIVER.start) / (RIVER.dock - RIVER.start) * 100, 0, 99)
@@ -238,6 +250,11 @@ function launch() {
     water.update(time, mode === 'paused' ? 0 : dt, boat, mode === 'playing' || mode === 'docking')
     water.reflect(renderer, scene, camera, boat.model, prepareVegetation)
     prepareVegetation(camera)
+    if (now >= nextShadow) {
+      placeShadow(boat)
+      renderer.shadowMap.needsUpdate = true
+      nextShadow = now + 34
+    }
     renderer.render(scene, camera)
   })
 }

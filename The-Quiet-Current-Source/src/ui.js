@@ -33,9 +33,9 @@ export function createUI(root, actions) {
 
     <section class="intro" aria-labelledby="title">
       <div class="intro-inner">
-        <div class="eyebrow"><span></span>晨雾中的热带雨林</div>
+        <div class="eyebrow"><span></span>夕阳下的热带雨林</div>
         <h1 id="title">雾隐<br><em>深流</em></h1>
-        <p>清晨的河面上，偶尔有鳄鱼游过。<br>等它们过去，再划向雾里的古老码头。</p>
+        <p>夕阳沉向林梢，清水映着晚霞。<br>等鳄鱼游过，再划向河湾里的古老码头。</p>
         <button class="primary start" type="button">${icon('paddle')}<span>开始划船</span></button>
       </div>
     </section>
@@ -139,7 +139,7 @@ export function createUI(root, actions) {
       if (dialog) {
         find('.dialog-icon').innerHTML = icon(arrived ? 'dock' : failed ? 'crossing' : 'pause')
         find('#dialog-title').textContent = arrived ? '已抵达古老码头' : failed ? '航行失败' : '划行已暂停'
-        find('.dialog p').textContent = arrived ? '小船已停稳。码头的灯还亮着，晨雾正从河面散去。'
+        find('.dialog p').textContent = arrived ? '小船已停稳。暮色落在河面，码头的灯亮了起来。'
           : failed ? '船身碰到了鳄鱼。下次提早松桨，等它游过再继续。' : '河水还在等你。'
         find('.arrival-label').hidden = !arrived
         stats.hidden = !arrived

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { RIVER, VISUALS } from './config.js'
-import { noiseGLSL, sun } from './atmosphere.js'
+import { noiseGLSL, sun, sunTint } from './atmosphere.js'
 import { mesh, vec } from './geometry.js'
 import { seededRandom } from './river.js'
 
@@ -17,12 +17,14 @@ export class Water {
     this.rippleIndex = 0
     this.frame = 0
     this.time = 0
+    this.fog = scene.fog
     this.uniforms = {
       riverTime: { value: 0 },
       mirror: { value: this.target.texture },
       mirrorProjection: { value: new THREE.Matrix4() },
       sunDirection: { value: sun },
-      mistColor: { value: new THREE.Color(VISUALS.fogColor) },
+      sunTint: { value: sunTint },
+      mistColor: { value: scene.fog.color },
       mistDensity: { value: VISUALS.fogDensity },
       ripples: { value: makeRipples() },
       rippleCount: { value: 0 },
@@ -31,6 +33,7 @@ export class Water {
     }
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
+      transparent: true, depthWrite: false,
       vertexShader: `
         varying vec3 worldPoint;
         varying vec4 mirrorPoint;
@@ -48,6 +51,7 @@ export class Water {
         uniform sampler2D mirror;
         uniform float riverTime;
         uniform vec3 sunDirection;
+        uniform vec3 sunTint;
         uniform vec3 mistColor;
         uniform float mistDensity;
         uniform vec4 ripples[${RIPPLE_COUNT}];
@@ -98,36 +102,39 @@ export class Water {
           }
 
           vec3 normal = normalize(vec3(tilt.x,1.,tilt.y));
-          float fresnel = pow(1.-clamp(dot(normal, viewDirection),0.,1.),3.2);
+          float fresnel = pow(1.-clamp(dot(normal, viewDirection),0.,1.),4.1);
           vec2 uv = mirrorPoint.xy / mirrorPoint.w * 0.5 + 0.5;
           vec2 distortion = tilt * vec2(0.081,0.083) * (0.55 + fresnel);
           uv = clamp(uv + distortion, 0.002, 0.998);
           vec3 reflected = texture2D(mirror,uv).rgb;
-          vec3 body = mix(vec3(0.030,0.070,0.052),vec3(0.110,0.143,0.072),breeze*0.83+swale*0.17);
-          vec3 color = mix(body, reflected*vec3(0.61,0.76,0.69), 0.41 + 0.48*fresnel);
+          vec3 body = mix(vec3(0.022,0.171,0.139),vec3(0.041,0.286,0.208),breeze*0.69+swale*0.31);
+          vec3 color = mix(body, reflected*vec3(0.87,0.94,0.91), 0.16 + 0.77*fresnel);
 
           float pattern = noise21(p*vec2(0.53,2.8)+vec2(t*0.035,t*0.24));
           float fine = noise21(p*vec2(0.64,12.7)+vec2(0.,t*0.29));
           float furrows = sin(p.y*9.7 + p.x*0.84 + pattern*7. + t*1.25)*0.5+0.5;
           float distanceFade = 1.-smoothstep(13.,75.,distanceToEye);
-          color += vec3(0.077,0.100,0.073) * smoothstep(0.33,0.73,pattern) * pow(furrows,4.) * distanceFade;
+          color += vec3(0.045,0.098,0.083) * smoothstep(0.33,0.73,pattern) * pow(furrows,4.) * distanceFade;
           color -= vec3(0.019,0.031,0.029) * smoothstep(0.38,0.84,fine) * distanceFade;
           vec3 reflectedRay = reflect(-viewDirection,normal);
           float specular = pow(max(dot(reflectedRay,sunDirection),0.),82.);
           float bearing = dot(normalize(sight.xz+0.001),normalize(-sunDirection.xz));
           float sheen = pow(max(0.,bearing),19.) * smoothstep(4.,28.,distanceToEye) * (1.-smoothstep(53.,101.,distanceToEye));
           float glints = smoothstep(0.53,0.90,pattern*0.64+fine*0.36) * pow(furrows,2.3);
-          color += vec3(0.85,0.58,0.19) * (specular*0.30 + sheen*glints*0.36 + sheen*0.023);
+          color += sunTint * (specular*0.78 + sheen*glints*0.47 + sheen*0.035);
 
           float s = -p.y;
           float center = 13.*sin(s*0.025-0.35)+5.8*sin(s*0.047+0.35)+2.47;
           float width = 16.8+3.45*sin(s*0.043+1.04)+2.75*sin(s*0.019+0.8);
-          float bank = abs(p.x-center)-width;
-          color = mix(color, vec3(0.16,0.145,0.075),smoothstep(-2.7,0.5,bank+breeze*0.9)*0.24);
-          color += vec3(0.64,0.74,0.61)*foam;
+          float crossRiver = abs((p.x-center)/width);
+          float shallow = smoothstep(0.36,0.99,crossRiver);
+          color = mix(color, vec3(0.17,0.34,0.22),shallow*(1.-fresnel)*0.26);
+          color += vec3(0.72,0.89,0.80)*foam;
           float air = 1.-exp(-pow(distanceToEye*mistDensity,2.));
-          color = mix(color,mistColor*1.02,air*0.92);
-          gl_FragColor = vec4(color,1.);
+          color = mix(color,mistColor,air*0.92);
+          float opacity = 0.12 + (1.-shallow)*0.10 + fresnel*0.77 + foam*0.18 + specular*0.085;
+          opacity = mix(clamp(opacity,0.0,0.98),0.99,air);
+          gl_FragColor = vec4(color,opacity);
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
         }
@@ -160,6 +167,7 @@ export class Water {
 
   update(time, dt, boat, showWake) {
     this.time = time
+    this.uniforms.mistDensity.value = this.fog.density
     this.uniforms.riverTime.value = time
     let active = 0
     for (const ripple of this.ripples) {
@@ -235,6 +243,7 @@ function makeSpray(scene) {
   })
   const object = new THREE.Points(geometry, material)
   object.frustumCulled = false
+  object.renderOrder = 7
   object.visible = false
   scene.add(object)
   const drops = Array.from({ length: count }, () => ({ life: 0, x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0 }))
