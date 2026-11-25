@@ -4,7 +4,7 @@ import { Boat } from './boat.js'
 import { Crocodiles } from './crocodiles.js'
 import { RiverAudio } from './audio.js'
 import { addSky, addLightShafts } from './atmosphere.js'
-import { addJungle } from './jungle.js'
+import { addJungle, jungleLayers } from './jungle.js'
 import { addFarRidges, addLandmarks } from './landmarks.js'
 import { berth, clamp, dock, reachedDock } from './river.js'
 import { createUI } from './ui.js'
@@ -151,13 +151,15 @@ function launch() {
   scene.background = new THREE.Color(VISUALS.fogColor)
   scene.fog = new THREE.FogExp2(VISUALS.fogColor, VISUALS.fogDensity)
   const camera = new THREE.PerspectiveCamera(61, 1, 0.055, 580)
+  camera.layers.enable(jungleLayers.view)
   markerPoint = new THREE.Vector3()
   addSky(scene)
   addFarRidges(scene)
-  addJungle(scene)
+  const prepareVegetation = addJungle(scene)
   addLandmarks(scene)
   addLightShafts(scene)
   water = new Water(scene)
+  water.reflectedCamera.layers.enable(jungleLayers.reflection)
   crocodiles = new Crocodiles(scene)
   boat = new Boat(scene, (x, z, side) => {
     water.ripple(x, z, 0.90, true)
@@ -234,7 +236,8 @@ function launch() {
       ui.update(distance, percent, playTime < 16 || boat.strokeCount < 5, projectDock(camera))
     }
     water.update(time, mode === 'paused' ? 0 : dt, boat, mode === 'playing' || mode === 'docking')
-    water.reflect(renderer, scene, camera, boat.model)
+    water.reflect(renderer, scene, camera, boat.model, prepareVegetation)
+    prepareVegetation(camera)
     renderer.render(scene, camera)
   })
 }

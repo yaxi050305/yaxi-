@@ -5,6 +5,7 @@ import { mesh, vec } from './geometry.js'
 import { seededRandom } from './river.js'
 
 const RIPPLE_COUNT = 14
+const makeRipples = () => Array.from({ length: RIPPLE_COUNT }, () => new THREE.Vector4(0, 0, -100, 0))
 
 export class Water {
   constructor(scene) {
@@ -12,6 +13,7 @@ export class Water {
     this.reflectedCamera = new THREE.PerspectiveCamera()
     this.clip = [new THREE.Plane(vec(0, 1, 0), 0.05)]
     this.direction = vec(0, 0, 0)
+    this.ripples = makeRipples()
     this.rippleIndex = 0
     this.frame = 0
     this.time = 0
@@ -22,7 +24,8 @@ export class Water {
       sunDirection: { value: sun },
       mistColor: { value: new THREE.Color(VISUALS.fogColor) },
       mistDensity: { value: VISUALS.fogDensity },
-      ripples: { value: Array.from({ length: RIPPLE_COUNT }, () => new THREE.Vector4(0, 0, -100, 0)) },
+      ripples: { value: makeRipples() },
+      rippleCount: { value: 0 },
       boatWake: { value: new THREE.Vector4() },
       wakeSpeed: { value: 0 },
     }
@@ -48,6 +51,7 @@ export class Water {
         uniform vec3 mistColor;
         uniform float mistDensity;
         uniform vec4 ripples[${RIPPLE_COUNT}];
+        uniform int rippleCount;
         uniform vec4 boatWake;
         uniform float wakeSpeed;
         ${noiseGLSL}
@@ -66,8 +70,13 @@ export class Water {
                           waves*0.037 - crossWave*0.022 + (swale-0.5)*0.075);
           float foam = 0.;
           for (int i = 0; i < ${RIPPLE_COUNT}; i++) {
+            if (i >= rippleCount) break;
             vec4 ripple = ripples[i];
             float age = t - ripple.z;
+            vec2 delta = p-ripple.xy;
+            // Beyond this margin the ring multiplier is below normal float32 precision.
+            float outer = age * 1.16 + 16.12;
+            if (dot(delta,delta) > outer*outer) continue;
             float radial = distance(p,ripple.xy);
             float front = radial - age * 1.16 - 0.12;
             float fade = max(0., 1. - age / 2.7) * ripple.w;
@@ -75,14 +84,18 @@ export class Water {
             tilt += normalize(p-ripple.xy+vec2(0.001))*sin(front*16.)*ring*0.068;
             foam += (exp(-abs(front)*31.) + exp(-abs(front+0.28)*35.)*0.48)*fade*0.14;
           }
-          vec2 trail = p - boatWake.xy;
-          float back = dot(trail, -boatWake.zw);
-          float across = abs(dot(trail, vec2(-boatWake.w,boatWake.z)));
-          float alongWake = smoothstep(0.,0.9,back) * (1.-smoothstep(2.,6.5,back));
-          float wakeEdge = across - back*0.27 - 0.37;
-          float wake = exp(-abs(wakeEdge)*9.) * alongWake * wakeSpeed;
-          tilt.y += wake*sin(back*14.-t*5.)*0.055;
-          foam += wake*0.052;
+          if (wakeSpeed > 0.) {
+            vec2 trail = p - boatWake.xy;
+            float back = dot(trail, -boatWake.zw);
+            if (back > 0. && back < 6.5) {
+              float across = abs(dot(trail, vec2(-boatWake.w,boatWake.z)));
+              float alongWake = smoothstep(0.,0.9,back) * (1.-smoothstep(2.,6.5,back));
+              float wakeEdge = across - back*0.27 - 0.37;
+              float wake = exp(-abs(wakeEdge)*9.) * alongWake * wakeSpeed;
+              tilt.y += wake*sin(back*14.-t*5.)*0.055;
+              foam += wake*0.052;
+            }
+          }
 
           vec3 normal = normalize(vec3(tilt.x,1.,tilt.y));
           float fresnel = pow(1.-clamp(dot(normal, viewDirection),0.,1.),3.2);
@@ -122,6 +135,7 @@ export class Water {
     })
     const plane = new THREE.PlaneGeometry(170, RIVER.sceneryEnd + 90).rotateX(-Math.PI / 2)
     this.surface = mesh(plane, material, 0, 0, -(RIVER.sceneryEnd - 76) / 2)
+    this.surface.renderOrder = 5
     scene.add(this.surface)
     this.spray = makeSpray(scene)
   }
@@ -133,12 +147,13 @@ export class Water {
   }
 
   reset() {
-    for (const ripple of this.uniforms.ripples.value) ripple.z = -100
+    for (const ripple of this.ripples) ripple.z = -100
+    this.uniforms.rippleCount.value = 0
     for (const drop of this.spray.drops) drop.life = 0
   }
 
   ripple(x, z, strength, splash = false) {
-    this.uniforms.ripples.value[this.rippleIndex].set(x, z, this.time, strength)
+    this.ripples[this.rippleIndex].set(x, z, this.time, strength)
     this.rippleIndex = (this.rippleIndex + 1) % RIPPLE_COUNT
     if (splash) this.spray.scatter(x, z, strength)
   }
@@ -146,12 +161,18 @@ export class Water {
   update(time, dt, boat, showWake) {
     this.time = time
     this.uniforms.riverTime.value = time
+    let active = 0
+    for (const ripple of this.ripples) {
+      const age = Math.fround(Math.fround(time) - Math.fround(ripple.z))
+      if (ripple.w && age < 2.701) this.uniforms.ripples.value[active++].copy(ripple)
+    }
+    this.uniforms.rippleCount.value = active
     this.uniforms.boatWake.value.set(boat.x, -boat.s, Math.sin(boat.yaw), -Math.cos(boat.yaw))
     this.uniforms.wakeSpeed.value = showWake ? Math.min(1, boat.speed / 3) : 0
     this.spray.update(dt)
   }
 
-  reflect(renderer, scene, camera, boatModel) {
+  reflect(renderer, scene, camera, boatModel, prepareVegetation) {
     this.frame++
     if (this.frame % 2 === 0) return
     camera.getWorldDirection(this.direction)
@@ -168,16 +189,18 @@ export class Water {
     reflection.updateMatrixWorld()
     this.uniforms.mirrorProjection.value.multiplyMatrices(reflection.projectionMatrix, reflection.matrixWorldInverse)
     const wasVisible = boatModel.visible
+    const sprayVisible = this.spray.object.visible
     this.surface.visible = false
     this.spray.object.visible = false
     boatModel.visible = false
+    prepareVegetation(reflection, true)
     renderer.clippingPlanes = this.clip
     renderer.setRenderTarget(this.target)
     renderer.render(scene, reflection)
     renderer.setRenderTarget(null)
     renderer.clippingPlanes = []
     this.surface.visible = true
-    this.spray.object.visible = true
+    this.spray.object.visible = sprayVisible
     boatModel.visible = wasVisible
   }
 }
@@ -212,6 +235,7 @@ function makeSpray(scene) {
   })
   const object = new THREE.Points(geometry, material)
   object.frustumCulled = false
+  object.visible = false
   scene.add(object)
   const drops = Array.from({ length: count }, () => ({ life: 0, x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0 }))
   let cursor = 0
@@ -227,6 +251,7 @@ function makeSpray(scene) {
       }
     },
     update(dt) {
+      let active = false
       for (const [i, drop] of drops.entries()) {
         if (drop.life > 0) {
           drop.life -= dt
@@ -234,14 +259,18 @@ function makeSpray(scene) {
           drop.x += drop.dx * dt
           drop.y += drop.dy * dt
           drop.z += drop.dz * dt
-            positions[i * 3] = drop.x
-            positions[i * 3 + 1] = drop.y
-            positions[i * 3 + 2] = drop.z
+          positions[i * 3] = drop.x
+          positions[i * 3 + 1] = drop.y
+          positions[i * 3 + 2] = drop.z
         }
         alpha[i] = drop.life > 0 && drop.y > 0 ? Math.min(0.85, drop.life * 2) : 0
+        active ||= alpha[i] > 0
       }
-      geometry.attributes.position.needsUpdate = true
-      geometry.attributes.opacity.needsUpdate = true
+      object.visible = active
+      if (active) {
+        geometry.attributes.position.needsUpdate = true
+        geometry.attributes.opacity.needsUpdate = true
+      }
     },
   }
 }

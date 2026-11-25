@@ -27,6 +27,7 @@ export function addSky(scene) {
       void main() {
         worldPoint = (modelMatrix * vec4(position, 1.)).xyz;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.);
+        gl_Position.z = gl_Position.w;
       }
     `,
     fragmentShader: `
@@ -52,7 +53,7 @@ export function addSky(scene) {
     `,
   }))
   sky.frustumCulled = false
-  sky.renderOrder = -10
+  sky.renderOrder = 10
   sky.onBeforeRender = (_renderer, _scene, camera) => {
     sky.position.copy(camera.position)
     sky.updateMatrixWorld()

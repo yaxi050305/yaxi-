@@ -11,6 +11,23 @@ const foliageMaterial = new THREE.MeshStandardMaterial({
 })
 const stoneMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93 })
 
+export const jungleLayers = { view: 1, reflection: 2 }
+
+function leafGeometry(positions, colors, indices) {
+  const leaves = geometry(positions, colors, indices)
+  const vertices = leaves.attributes.position.array
+  const same = (a, b) => vertices[a] === vertices[b] && vertices[a + 1] === vertices[b + 1] && vertices[a + 2] === vertices[b + 2]
+  const triangles = []
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i] * 3
+    const b = indices[i + 1] * 3
+    const c = indices[i + 2] * 3
+    if (!same(a, b) && !same(b, c) && !same(c, a)) triangles.push(indices[i], indices[i + 1], indices[i + 2])
+  }
+  if (triangles.length !== indices.length) leaves.setIndex(triangles)
+  return leaves
+}
+
 function leaf(positions, colors, indices, start, tip, sideways, width, color, simple = false) {
   const base = positions.length / 3
   if (simple) {
@@ -82,7 +99,7 @@ function palm(seed) {
       }
     }
   }
-  return { wood: combine([trunk, ...fronds]), leaves: geometry(positions, colors, indices) }
+  return { wood: combine([trunk, ...fronds]), leaves: leafGeometry(positions, colors, indices) }
 }
 
 function canopy(seed) {
@@ -132,7 +149,7 @@ function canopy(seed) {
       leaf(positions, colors, indices, branch, second, direction, length * 0.43, tint, true)
     }
   }
-  return { wood: combine(branches), leaves: geometry(positions, colors, indices) }
+  return { wood: combine(branches), leaves: leafGeometry(positions, colors, indices) }
 }
 
 function undergrowth(seed) {
@@ -151,7 +168,7 @@ function undergrowth(seed) {
     tint.setHSL(mix(0.20, 0.34, random()), mix(0.40, 0.62, random()), mix(0.16, 0.33, random()))
     leaf(positions, colors, indices, start, tip, vec(-dz, 0.28, dx), length * 0.20, tint)
   }
-  return geometry(positions, colors, indices)
+  return leafGeometry(positions, colors, indices)
 }
 
 function makeBank(side) {
@@ -205,6 +222,7 @@ export function addJungle(scene) {
   const shrubs = [undergrowth(17), undergrowth(85)]
   const rocks = [stone(22), stone(79), stone(145)]
   const batches = new Map()
+  const vines = new Map()
   const dummy = new THREE.Object3D()
   const tint = new THREE.Color()
   const batch = (landmark, material, s, adjustment) => {
@@ -251,9 +269,12 @@ export function addJungle(scene) {
         parts.push(tube([top, top.clone().add(vec(-side * 0.55, -2.6, 0.3)),
           top.clone().add(vec(-side * (0.5 + random() * 0.7), -5.6, 0.6))], 0.045, 0.018, 8, 4))
       }
-      scene.add(mesh(combine(parts), barkMaterial))
+      const section = Math.floor(s / 68)
+      if (!vines.has(section)) vines.set(section, [])
+      vines.get(section).push(...parts)
     }
   }
+  for (const parts of vines.values()) scene.add(mesh(combine(parts), barkMaterial))
   const vista = [
     [1, -1, 0.8, 1.64, 0.16], [12, -1, 1.1, 1.46, 5.86],
     [21, -1, 0.8, 1.18, 0.22], [8, 1, 1.4, 1.72, 2.75],
@@ -264,15 +285,63 @@ export function addJungle(scene) {
   plant(trees, 'tree', 7, -1, 3.1, 1.72, 0.0)
   plant(trees, 'tree', 18, 1, 4.9, 1.59, 2.8)
 
-  for (const { landmark, material, matrices, colors } of batches.values()) {
-    const instances = new THREE.InstancedMesh(landmark, material, matrices.length)
-    for (let i = 0; i < matrices.length; i++) {
-      instances.setMatrixAt(i, matrices[i])
-      instances.setColorAt(i, colors[i])
+  const visibleBatches = Array.from(batches.values(), ({ landmark, material, matrices, colors }) => {
+    landmark.computeBoundingBox()
+    const bounds = matrices.map(matrix => landmark.boundingBox.clone().applyMatrix4(matrix).expandByScalar(0.02))
+    const batchBounds = new THREE.Box3()
+    for (const bound of bounds) batchBounds.union(bound)
+    const passes = [jungleLayers.view, jungleLayers.reflection].map(layer => {
+      const instances = new THREE.InstancedMesh(landmark, material, matrices.length)
+      instances.layers.set(layer)
+      instances.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      const selection = new Int32Array(matrices.length)
+      for (let i = 0; i < matrices.length; i++) {
+        instances.setMatrixAt(i, matrices[i])
+        instances.setColorAt(i, colors[i])
+        selection[i] = i
+      }
+      instances.instanceColor.setUsage(THREE.DynamicDrawUsage)
+      instances.computeBoundingSphere()
+      scene.add(instances)
+      return { instances, selection }
+    })
+    return { matrices, colors, passes, bounds, batchBounds }
+  })
+
+  const projection = new THREE.Matrix4()
+  const lastProjection = [new THREE.Matrix4(), new THREE.Matrix4()]
+  const frustum = new THREE.Frustum()
+  return (camera, reflecting = false) => {
+    const pass = reflecting ? 1 : 0
+    projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    if (lastProjection[pass].equals(projection)) return
+    lastProjection[pass].copy(projection)
+    frustum.setFromProjectionMatrix(projection)
+    for (const { matrices, colors, passes, bounds, batchBounds } of visibleBatches) {
+      const { instances, selection } = passes[pass]
+      if (!frustum.intersectsBox(batchBounds)) {
+        instances.visible = false
+        continue
+      }
+      let drawn = 0
+      let updated = false
+      for (let i = 0; i < bounds.length; i++) {
+        const bound = bounds[i]
+        if ((reflecting && bound.max.y < -0.05) || !frustum.intersectsBox(bound)) continue
+        if (selection[drawn] !== i) {
+          selection[drawn] = i
+          instances.setMatrixAt(drawn, matrices[i])
+          instances.setColorAt(drawn, colors[i])
+          updated = true
+        }
+        drawn++
+      }
+      instances.visible = drawn > 0
+      instances.count = drawn
+      if (updated) {
+        instances.instanceMatrix.needsUpdate = true
+        instances.instanceColor.needsUpdate = true
+      }
     }
-    instances.instanceMatrix.needsUpdate = true
-    instances.instanceColor.needsUpdate = true
-    instances.computeBoundingSphere()
-    scene.add(instances)
   }
 }
